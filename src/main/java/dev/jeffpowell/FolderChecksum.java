@@ -1,18 +1,20 @@
 package dev.jeffpowell;
 
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
+import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -21,11 +23,13 @@ public class FolderChecksum {
     private final Path rightRoot;
     private final MessageDigest digest;
     private final Map<Path, Checksum> checksums;
+    private final ExecutorService executor;
     
-    public FolderChecksum(Path leftRoot, Path rightRoot, Map<Path, Checksum> checksums) {
+    public FolderChecksum(Path leftRoot, Path rightRoot, Map<Path, Checksum> checksums, ExecutorService executor) {
         this.leftRoot = leftRoot;
         this.rightRoot = rightRoot;
         this.checksums = checksums;
+        this.executor = executor;
         try {
             this.digest = MessageDigest.getInstance("MD5");
         } catch (NoSuchAlgorithmException e) {
@@ -35,7 +39,9 @@ public class FolderChecksum {
 
     public Collection<Path> calculateChecksumDiff() throws IOException
     {
+        System.out.println("Walking entire tree under " + leftRoot);
         Map<Integer, List<Path>> directoriesByDepth_left = getDirectoryTreeByDepth(leftRoot);
+        System.out.println("Walking entire tree under " + rightRoot);
         Map<Integer, List<Path>> directoriesByDepth_right = getDirectoryTreeByDepth(rightRoot);
         directoriesByDepth_right.entrySet().stream().forEach(e -> directoriesByDepth_left.get(e.getKey()).addAll(e.getValue()));
         Map<Path, Checksum> allChecksums = allChecksums(directoriesByDepth_left);
@@ -71,61 +77,34 @@ public class FolderChecksum {
         }
     }
 
-    public record Checksum(String left, String right){}
-        
-    Map<Path, Checksum> allChecksums(Map<Integer, List<Path>> directoriesByDepth) throws IOException {
+    Map<Path, Checksum> allChecksums(Map<Integer, List<Path>> directoriesByDepth) {
         int maxDepth = directoriesByDepth.keySet().stream().max(Comparator.naturalOrder()).orElse(0);
-
+        Set<Path> visited = new HashSet<>();
         for (int depth = maxDepth; depth >= 1; depth--) {
+            System.out.println("Exploring " + directoriesByDepth.get(depth).size() + " folders at depth " + depth);
+            Map<Path, Future<Checksum>> futures = new HashMap<>();
             for (Path d : directoriesByDepth.get(depth)) {
-                if (checksums.containsKey(d)) {
+                if (!visited.add(d)) {
                     continue;
                 }
-                String leftChecksum = checksum(digest, leftRoot, d, checksums, Checksum::left);
-                String rightChecksum = checksum(digest, rightRoot, d, checksums, Checksum::right);
-                checksums.put(d, new Checksum(leftChecksum, rightChecksum));
+                futures.put(d, executor.submit(new ChecksumJob(leftRoot, rightRoot, d, checksums)));
             }
+            checksums.putAll(futures.entrySet().stream()
+                .collect(Collectors.toMap(
+                    Map.Entry::getKey,
+                    e -> {
+                        try {
+                            return e.getValue().get();
+                        } catch (InterruptedException | ExecutionException e1) {
+                            return new Checksum(e.getKey().toString(), "");
+                        }
+                    }
+                )));
         }
         return checksums;
     }
 
-    String checksum(MessageDigest digest, Path root, Path directory, Map<Path, Checksum> checksumCache, Function<Checksum, String> pickChecksumFn) throws IOException {
-        List<Path> paths = new ArrayList<>();
-        if (!Files.exists(root.resolve(directory))) {
-            return root.resolve(directory).toString();
-        }
-        try (Stream<Path> fileStream = Files.walk(root.resolve(directory), 1)) {
-            paths = fileStream.filter(p -> !p.equals(root.resolve(directory))).collect(Collectors.toList());
-        }
-        for (Path p : paths) {
-            if (checksumCache.containsKey(root.relativize(p))) {
-                String cachedChecksum = pickChecksumFn.apply(checksumCache.get(root.relativize(p)));
-                digest.update(cachedChecksum.getBytes());
-            }
-            else {
-                try (FileInputStream fileStream = new FileInputStream(p.toFile())) {
-                    digest.update(fileStream.readAllBytes());
-                }
-            }
-        }
-        digest.update(directory.toString().getBytes());
-        String checksum = bytesToHex(digest.digest());
-        digest.reset();
-        return checksum;
-    }
-
-    public static String bytesToHex(byte[] bytes) {
-        final char[] hexArray = {'0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'};
-        char[] hexChars = new char[bytes.length * 2];
-        int v;
-        for ( int j = 0; j < bytes.length; j++ ) {
-            v = bytes[j] & 0xFF;
-            hexChars[j * 2] = hexArray[v >>> 4];
-            hexChars[j * 2 + 1] = hexArray[v & 0x0F];
-        }
-        return new String(hexChars);
-    }
-
+    
     public Path getLeftRoot() {
         return leftRoot;
     }
