@@ -64,7 +64,7 @@ public class FolderChecksum {
                 i = i.getParent();
             }
         }
-        return deepestPathsKnown.values();
+        return deepestPathsKnown.values().stream().collect(Collectors.toSet());
     }
 
     Map<Integer, List<Path>> getDirectoryTreeByDepth(Path directory) throws IOException {

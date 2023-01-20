@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class App 
@@ -15,7 +16,8 @@ public class App
         System.out.println("Comparing the following file trees for equality:");
         System.out.println(leftRoot);
         System.out.println(rightRoot);
-        FolderChecksum folderChecksum = new FolderChecksum(leftRoot, rightRoot, new HashMap<>(), Executors.newCachedThreadPool());
+        ExecutorService executor = Executors.newCachedThreadPool();
+        FolderChecksum folderChecksum = new FolderChecksum(leftRoot, rightRoot, new HashMap<>(), executor);
         Collection<Path> badPaths = folderChecksum.calculateChecksumDiff();
         System.out.println("\nResults:\n");
         if (badPaths.isEmpty()) {
@@ -25,5 +27,6 @@ public class App
             System.out.println("The following paths have a mismatch:");
             badPaths.stream().forEach(System.out::println);
         }
+        executor.shutdown();
     }
 }
